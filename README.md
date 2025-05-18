@@ -1,4 +1,5 @@
 # Strava Metrics Explorer
+[![View on Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://movement-mapped.streamlit.app/)
 
 Visualize wearable data from Strava using Streamlit. Includes filters, KDE plots, boxplots, and scatterplots with regression.
 
