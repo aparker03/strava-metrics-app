@@ -10,7 +10,7 @@ warnings.filterwarnings("ignore")
 # Load data
 @st.cache_data
 def load_data():
-    df = pd.read_csv("notebooks/strava/data/strava.csv", parse_dates=["timestamp"])
+    df = pd.read_csv("data/strava.csv", parse_dates=["timestamp"])
     return df
 
 df = load_data()
