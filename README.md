@@ -26,7 +26,7 @@ To run the app locally:
 ```bash
 pip install -r requirements.txt
 streamlit run strava_app.py
-
+```
 ## Data
 
 This project uses exported Strava activity data from a personal device.  
