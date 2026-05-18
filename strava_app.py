@@ -1,4 +1,4 @@
-from io import BytesIO
+from io import StringIO
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -30,9 +30,6 @@ EXPECTED_METRICS = [
 ]
 TIME_OF_DAY_ORDER = ["Night", "Morning", "Afternoon", "Evening"]
 SEMICIRCLE_SCALE = 180 / 2**31
-MAX_CHART_ROWS = 5_000
-MAX_MAP_ROWS = 10_000
-MAX_PREVIEW_ROWS = 1_000
 
 
 @st.cache_data(show_spinner=False)
@@ -44,7 +41,7 @@ def load_default_data() -> pd.DataFrame:
 @st.cache_data(show_spinner=False)
 def load_uploaded_data(file_contents: bytes) -> pd.DataFrame:
     """Load a user-uploaded Strava CSV."""
-    return pd.read_csv(BytesIO(file_contents))
+    return pd.read_csv(StringIO(file_contents.decode("utf-8")))
 
 
 def coerce_timestamp(df: pd.DataFrame) -> pd.DataFrame:
@@ -210,35 +207,6 @@ def plot_empty_state(message: str) -> None:
     st.info(message)
 
 
-def normalize_date_range(date_value, min_date, max_date) -> tuple:
-    if isinstance(date_value, (tuple, list)):
-        if len(date_value) == 2:
-            return date_value[0], date_value[1]
-        if len(date_value) == 1:
-            return date_value[0], date_value[0]
-    return min_date, max_date
-
-
-def chart_sample(df: pd.DataFrame, limit: int = MAX_CHART_ROWS) -> pd.DataFrame:
-    if len(df) <= limit:
-        return df
-    return df.sample(limit, random_state=42).sort_index()
-
-
-def use_stretch_kwargs() -> dict:
-    version_parts = []
-    for part in st.__version__.split(".")[:2]:
-        digits = "".join(character for character in part if character.isdigit())
-        version_parts.append(int(digits or 0))
-
-    if tuple(version_parts) >= (1, 50):
-        return {"width": "stretch"}
-    return {"use_container_width": True}
-
-
-STRETCH = use_stretch_kwargs()
-
-
 st.title("🏃 Strava Metrics Explorer")
 st.markdown(
     "Turn Strava activity exports into an interactive performance dashboard with "
@@ -269,13 +237,8 @@ if not metrics:
     st.error("No numeric metrics were found in this dataset.")
     st.stop()
 
-valid_timestamps = df["timestamp"].dropna()
-if valid_timestamps.empty:
-    st.error("The timestamp column could not be parsed. Please upload a CSV with valid timestamps.")
-    st.stop()
-
-min_date = valid_timestamps.min().date()
-max_date = valid_timestamps.max().date()
+min_date = df["timestamp"].min().date()
+max_date = df["timestamp"].max().date()
 time_options = [option for option in TIME_OF_DAY_ORDER if option in df["time_of_day"].astype(str).unique()]
 month_options = sorted_months(df)
 year_options = sorted(df["year"].dropna().astype(int).unique().tolist())
@@ -301,7 +264,8 @@ with st.sidebar:
     )
     remove_outliers = st.checkbox("Remove outliers for primary metric", value=True)
 
-date_range = normalize_date_range(date_range, min_date, max_date)
+if not isinstance(date_range, tuple):
+    date_range = (date_range, date_range)
 
 filtered = filter_data(
     df=df,
@@ -334,13 +298,11 @@ summary_cols[4].metric("Avg Power", format_number(metric_mean(filtered, "Power")
 
 st.divider()
 
-page = st.sidebar.radio(
-    "Dashboard section",
-    ["Overview", "Trends", "Distributions", "Relationships", "Activities", "Map", "Data"],
-    help="Only the selected section is rendered, which keeps the app responsive on Streamlit Cloud.",
+overview_tab, trends_tab, distributions_tab, relationships_tab, activities_tab, map_tab, data_tab = st.tabs(
+    ["Overview", "Trends", "Distributions", "Relationships", "Activities", "Map", "Data"]
 )
 
-if page == "Overview":
+with overview_tab:
     left, right = st.columns([1.2, 1])
 
     with left:
@@ -365,13 +327,13 @@ if page == "Overview":
                 ],
             }
         )
-        st.dataframe(snapshot, hide_index=True, **STRETCH)
+        st.dataframe(snapshot, hide_index=True, width="stretch")
 
     with right:
         st.subheader("Records by time of day")
         if "time_of_day" in filtered.columns:
             time_counts = filtered["time_of_day"].value_counts().reindex(TIME_OF_DAY_ORDER).dropna()
-            st.bar_chart(time_counts, **STRETCH)
+            st.bar_chart(time_counts, width="stretch")
         else:
             plot_empty_state("No time-of-day column is available.")
 
@@ -384,11 +346,11 @@ if page == "Overview":
             .sort_values("month_number")
             .set_index("month_name")
         )
-        st.bar_chart(monthly[[selected_metric]], **STRETCH)
+        st.bar_chart(monthly[[selected_metric]], width="stretch")
     else:
         plot_empty_state("Monthly averages are unavailable for this dataset.")
 
-if page == "Trends":
+with trends_tab:
     st.subheader(f"{selected_metric} over time")
     trend_frequency = st.radio(
         "Aggregation",
@@ -396,10 +358,7 @@ if page == "Trends":
         horizontal=True,
     )
 
-    trend_source = chart_sample(filtered, MAX_CHART_ROWS)
-    if len(filtered) > len(trend_source):
-        st.caption(f"Showing a deterministic sample of {len(trend_source):,} records for performance.")
-    trend_data = trend_source[["timestamp", selected_metric]].dropna().sort_values("timestamp")
+    trend_data = filtered[["timestamp", selected_metric]].dropna().sort_values("timestamp")
     if trend_data.empty:
         plot_empty_state("There is no valid data for the selected metric.")
     else:
@@ -409,9 +368,9 @@ if page == "Trends":
             trend_data = trend_data.set_index("timestamp").resample("W").mean().dropna()
         else:
             trend_data = trend_data.set_index("timestamp")
-        st.line_chart(trend_data[[selected_metric]], **STRETCH)
+        st.line_chart(trend_data[[selected_metric]], width="stretch")
 
-if page == "Distributions":
+with distributions_tab:
     kde_col, box_col = st.columns(2)
 
     with kde_col:
@@ -420,11 +379,8 @@ if page == "Distributions":
             plot_empty_state("Not enough variation for a density plot.")
         else:
             fig, ax = plt.subplots(figsize=(9, 5))
-            plot_data = chart_sample(filtered, MAX_CHART_ROWS)
-            if len(filtered) > len(plot_data):
-                st.caption(f"Plots use a deterministic sample of {len(plot_data):,} records for performance.")
             sns.kdeplot(
-                data=plot_data,
+                data=filtered,
                 x=selected_metric,
                 hue="time_of_day" if "time_of_day" in filtered.columns else None,
                 common_norm=False,
@@ -432,7 +388,7 @@ if page == "Distributions":
                 ax=ax,
             )
             ax.set_xlabel(selected_metric)
-            st.pyplot(fig, **STRETCH)
+            st.pyplot(fig, width="stretch")
 
     with box_col:
         st.subheader(f"{selected_metric} by time of day")
@@ -440,37 +396,24 @@ if page == "Distributions":
             plot_empty_state("Not enough time-of-day groups for a boxplot.")
         else:
             fig, ax = plt.subplots(figsize=(9, 5))
-            box_data = chart_sample(filtered, MAX_CHART_ROWS)
-            sns.boxplot(
-                data=box_data,
-                x="time_of_day",
-                y=selected_metric,
-                hue="time_of_day",
-                palette="Set2",
-                legend=False,
-                ax=ax,
-            )
+            sns.boxplot(data=filtered, x="time_of_day", y=selected_metric, hue="time_of_day", palette="Set2", legend=False, ax=ax)
             ax.set_xlabel("Time of day")
             ax.set_ylabel(selected_metric)
-            st.pyplot(fig, **STRETCH)
+            st.pyplot(fig, width="stretch")
 
     st.subheader(f"Histogram of {selected_metric}")
     fig, ax = plt.subplots(figsize=(12, 5))
-    hist_data = chart_sample(filtered, MAX_CHART_ROWS)
-    sns.histplot(hist_data[selected_metric].dropna(), bins=30, kde=True, ax=ax)
+    sns.histplot(filtered[selected_metric].dropna(), bins=30, kde=True, ax=ax)
     ax.set_xlabel(selected_metric)
-    st.pyplot(fig, **STRETCH)
+    st.pyplot(fig, width="stretch")
 
-if page == "Relationships":
+with relationships_tab:
     scatter_col, corr_col = st.columns([1.1, 1])
 
     with scatter_col:
         st.subheader("Metric relationship")
         show_regression = st.checkbox("Add regression line", value=True)
-        scatter_source = chart_sample(filtered, MAX_CHART_ROWS)
-        if len(filtered) > len(scatter_source):
-            st.caption(f"Scatterplot uses a deterministic sample of {len(scatter_source):,} records for performance.")
-        scatter_data = scatter_source[[selected_metric, comparison_metric, "time_of_day"]].dropna()
+        scatter_data = filtered[[selected_metric, comparison_metric, "time_of_day"]].dropna()
         if scatter_data.empty:
             plot_empty_state("Insufficient data for the selected metrics.")
         else:
@@ -496,7 +439,7 @@ if page == "Relationships":
                 )
             correlation = scatter_data[[selected_metric, comparison_metric]].corr().iloc[0, 1]
             ax.set_title(f"Correlation: {format_number(correlation, 2)}")
-            st.pyplot(fig, **STRETCH)
+            st.pyplot(fig, width="stretch")
 
     with corr_col:
         st.subheader("Correlation heatmap")
@@ -505,18 +448,18 @@ if page == "Relationships":
         if len(corr_metrics) < 2:
             plot_empty_state("At least two populated numeric metrics are needed for a heatmap.")
         else:
-            corr = chart_sample(filtered, MAX_CHART_ROWS)[corr_metrics].corr()
+            corr = filtered[corr_metrics].corr()
             fig, ax = plt.subplots(figsize=(8, 6))
             sns.heatmap(corr, cmap="coolwarm", center=0, annot=False, ax=ax)
-            st.pyplot(fig, **STRETCH)
+            st.pyplot(fig, width="stretch")
 
-if page == "Activities":
+with activities_tab:
     st.subheader("Activity-level summary")
     activity_summary = make_activity_summary(filtered, metrics)
     if activity_summary.empty:
         plot_empty_state("No activity identifier was found in this dataset.")
     else:
-        st.dataframe(activity_summary, **STRETCH, hide_index=True)
+        st.dataframe(activity_summary, width="stretch", hide_index=True)
         st.download_button(
             "Download activity summary",
             data=dataframe_csv(activity_summary),
@@ -524,7 +467,7 @@ if page == "Activities":
             mime="text/csv",
         )
 
-if page == "Map":
+with map_tab:
     st.subheader("Route map")
     if {"lat", "lon"}.issubset(filtered.columns):
         map_data = filtered[["lat", "lon"]].dropna()
@@ -532,20 +475,14 @@ if page == "Map":
         if map_data.empty:
             plot_empty_state("No valid latitude/longitude points are available for the current filters.")
         else:
-            if len(map_data) > MAX_MAP_ROWS:
-                map_data = map_data.sample(MAX_MAP_ROWS, random_state=42).sort_index()
-                st.caption(f"Map uses a deterministic sample of {MAX_MAP_ROWS:,} points for performance.")
-            st.map(map_data, **STRETCH)
+            st.map(map_data, latitude="lat", longitude="lon", width="stretch")
             st.caption("FIT semicircle coordinates are converted to latitude/longitude when needed.")
     else:
         plot_empty_state("This dataset does not include position_lat and position_long columns.")
 
-if page == "Data":
+with data_tab:
     st.subheader("Filtered data")
-    preview = filtered.head(MAX_PREVIEW_ROWS)
-    if len(filtered) > len(preview):
-        st.caption(f"Previewing the first {len(preview):,} of {len(filtered):,} filtered records. Download includes all rows.")
-    st.dataframe(preview, **STRETCH, hide_index=True)
+    st.dataframe(filtered, width="stretch", hide_index=True)
     st.download_button(
         "Download filtered CSV",
         data=dataframe_csv(filtered),

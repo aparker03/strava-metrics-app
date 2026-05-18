@@ -10,7 +10,6 @@ A polished Streamlit dashboard for exploring Strava and wearable activity data. 
 - Filter by date range, year, month, time of day, and activity file.
 - Review dashboard summary cards for records, activities, heart rate, speed, and power.
 - Explore trend charts with raw, daily, or weekly aggregation.
-- Render one dashboard section at a time to keep Streamlit Cloud responsive.
 - Compare metric distributions with KDE plots, boxplots, and histograms.
 - Analyze relationships with scatterplots, optional regression lines, and a correlation heatmap.
 - Summarize each activity in a sortable table and download the results.
@@ -105,8 +104,6 @@ If no file is uploaded, the app falls back to `data/strava.csv`.
 5. Confirm Streamlit installs dependencies from `requirements.txt`.
 
 ## Maintenance Notes
-
-The dashboard intentionally renders one section at a time and samples large chart/map previews so hosted deployments stay responsive. Download buttons still export the full filtered dataset.
 
 Dependencies use version ranges to keep installs current while avoiding unexpected major-version upgrades. To refresh dependencies locally:
 
