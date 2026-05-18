@@ -1,4 +1,5 @@
 from io import StringIO
+import math
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -30,6 +31,9 @@ EXPECTED_METRICS = [
 ]
 TIME_OF_DAY_ORDER = ["Night", "Morning", "Afternoon", "Evening"]
 SEMICIRCLE_SCALE = 180 / 2**31
+DEFAULT_VISUAL_ROW_LIMIT = 5_000
+DEFAULT_MAP_ROW_LIMIT = 3_000
+DEFAULT_TABLE_ROW_LIMIT = 1_000
 
 
 @st.cache_data(show_spinner=False)
@@ -68,6 +72,12 @@ def add_derived_columns(df: pd.DataFrame) -> pd.DataFrame:
         include_lowest=True,
     )
     return df
+
+
+@st.cache_data(show_spinner=False)
+def prepare_data(df: pd.DataFrame) -> pd.DataFrame:
+    """Add reusable derived columns once per uploaded/default dataset."""
+    return add_map_columns(add_derived_columns(df))
 
 
 def add_map_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -109,6 +119,7 @@ def sorted_months(df: pd.DataFrame) -> list[str]:
     return []
 
 
+@st.cache_data(show_spinner=False)
 def filter_data(
     df: pd.DataFrame,
     selected_time: list[str],
@@ -141,6 +152,7 @@ def filter_data(
     return filtered
 
 
+@st.cache_data(show_spinner=False)
 def remove_metric_outliers(df: pd.DataFrame, metric: str) -> pd.DataFrame:
     if metric not in df.columns or df[metric].dropna().empty:
         return df
@@ -166,6 +178,7 @@ def metric_mean(df: pd.DataFrame, metric: str) -> float:
     return pd.to_numeric(df[metric], errors="coerce").mean()
 
 
+@st.cache_data(show_spinner=False)
 def make_activity_summary(df: pd.DataFrame, metrics: list[str]) -> pd.DataFrame:
     if "datafile" not in df.columns or df.empty:
         return pd.DataFrame()
@@ -199,8 +212,24 @@ def make_activity_summary(df: pd.DataFrame, metrics: list[str]) -> pd.DataFrame:
     return summary.sort_values("start_time" if "start_time" in summary.columns else "datafile")
 
 
+@st.cache_data(show_spinner=False)
 def dataframe_csv(df: pd.DataFrame) -> bytes:
     return df.to_csv(index=False).encode("utf-8")
+
+
+def limit_rows(df: pd.DataFrame, max_rows: int) -> pd.DataFrame:
+    """Return an evenly spaced sample so large charts stay responsive."""
+    if max_rows <= 0 or len(df) <= max_rows:
+        return df
+
+    step = max(1, math.ceil(len(df) / max_rows))
+    return df.iloc[::step].head(max_rows)
+
+
+def render_matplotlib(fig) -> None:
+    """Render and immediately close matplotlib figures to avoid rerun buildup."""
+    st.pyplot(fig, width="stretch", clear_figure=True)
+    plt.close(fig)
 
 
 def plot_empty_state(message: str) -> None:
@@ -225,7 +254,7 @@ else:
     df = load_default_data()
     data_source = DEFAULT_DATA_PATH
 
-df = add_map_columns(add_derived_columns(df))
+df = prepare_data(df)
 
 missing_required = [column for column in ["timestamp"] if column not in df.columns]
 if missing_required:
@@ -264,6 +293,24 @@ with st.sidebar:
     )
     remove_outliers = st.checkbox("Remove outliers for primary metric", value=True)
 
+    st.header("Performance")
+    visual_row_limit = st.slider(
+        "Max chart rows",
+        min_value=1_000,
+        max_value=25_000,
+        value=DEFAULT_VISUAL_ROW_LIMIT,
+        step=1_000,
+        help="Large uploads are sampled evenly for smoother charts while summaries still use the full filtered dataset.",
+    )
+    map_row_limit = st.slider(
+        "Max map points",
+        min_value=500,
+        max_value=10_000,
+        value=DEFAULT_MAP_ROW_LIMIT,
+        step=500,
+        help="Route points are sampled evenly so map rendering stays responsive.",
+    )
+
 if not isinstance(date_range, tuple):
     date_range = (date_range, date_range)
 
@@ -287,7 +334,11 @@ if filtered.empty:
 
 activity_count = filtered["datafile"].nunique() if "datafile" in filtered.columns else None
 record_count = len(filtered)
-distance_value = metric_mean(filtered.groupby("datafile")["distance"].max().reset_index(), "distance") if {"datafile", "distance"}.issubset(filtered.columns) else metric_mean(filtered, "distance")
+distance_value = (
+    metric_mean(filtered.groupby("datafile")["distance"].max().reset_index(), "distance")
+    if {"datafile", "distance"}.issubset(filtered.columns)
+    else metric_mean(filtered, "distance")
+)
 
 summary_cols = st.columns(5)
 summary_cols[0].metric("Records", f"{record_count:,}")
@@ -298,11 +349,14 @@ summary_cols[4].metric("Avg Power", format_number(metric_mean(filtered, "Power")
 
 st.divider()
 
-overview_tab, trends_tab, distributions_tab, relationships_tab, activities_tab, map_tab, data_tab = st.tabs(
-    ["Overview", "Trends", "Distributions", "Relationships", "Activities", "Map", "Data"]
+page = st.radio(
+    "Dashboard section",
+    ["Overview", "Trends", "Distributions", "Relationships", "Activities", "Map", "Data"],
+    horizontal=True,
+    label_visibility="collapsed",
 )
 
-with overview_tab:
+if page == "Overview":
     left, right = st.columns([1.2, 1])
 
     with left:
@@ -332,7 +386,9 @@ with overview_tab:
     with right:
         st.subheader("Records by time of day")
         if "time_of_day" in filtered.columns:
-            time_counts = filtered["time_of_day"].value_counts().reindex(TIME_OF_DAY_ORDER).dropna()
+            time_counts = (
+                filtered["time_of_day"].value_counts().reindex(TIME_OF_DAY_ORDER).dropna()
+            )
             st.bar_chart(time_counts, width="stretch")
         else:
             plot_empty_state("No time-of-day column is available.")
@@ -350,7 +406,7 @@ with overview_tab:
     else:
         plot_empty_state("Monthly averages are unavailable for this dataset.")
 
-with trends_tab:
+if page == "Trends":
     st.subheader(f"{selected_metric} over time")
     trend_frequency = st.radio(
         "Aggregation",
@@ -358,7 +414,9 @@ with trends_tab:
         horizontal=True,
     )
 
-    trend_data = filtered[["timestamp", selected_metric]].dropna().sort_values("timestamp")
+    trend_data = (
+        filtered[["timestamp", selected_metric]].dropna().sort_values("timestamp")
+    )
     if trend_data.empty:
         plot_empty_state("There is no valid data for the selected metric.")
     else:
@@ -368,19 +426,34 @@ with trends_tab:
             trend_data = trend_data.set_index("timestamp").resample("W").mean().dropna()
         else:
             trend_data = trend_data.set_index("timestamp")
+        if trend_frequency == "Raw records":
+            original_points = len(trend_data)
+            trend_data = limit_rows(trend_data, visual_row_limit)
+            if original_points > len(trend_data):
+                st.caption(
+                    f"Showing {len(trend_data):,} evenly sampled points from "
+                    f"{original_points:,} records for smoother rendering."
+                )
         st.line_chart(trend_data[[selected_metric]], width="stretch")
 
-with distributions_tab:
+if page == "Distributions":
+    plot_data = limit_rows(filtered, visual_row_limit)
+    if len(filtered) > len(plot_data):
+        st.caption(
+            f"Showing {len(plot_data):,} evenly sampled rows from "
+            f"{len(filtered):,} records for smoother distribution charts."
+        )
+
     kde_col, box_col = st.columns(2)
 
     with kde_col:
         st.subheader(f"Density of {selected_metric}")
-        if filtered[selected_metric].dropna().nunique() < 2:
+        if plot_data[selected_metric].dropna().nunique() < 2:
             plot_empty_state("Not enough variation for a density plot.")
         else:
             fig, ax = plt.subplots(figsize=(9, 5))
             sns.kdeplot(
-                data=filtered,
+                data=plot_data,
                 x=selected_metric,
                 hue="time_of_day" if "time_of_day" in filtered.columns else None,
                 common_norm=False,
@@ -388,32 +461,47 @@ with distributions_tab:
                 ax=ax,
             )
             ax.set_xlabel(selected_metric)
-            st.pyplot(fig, width="stretch")
+            render_matplotlib(fig)
 
     with box_col:
         st.subheader(f"{selected_metric} by time of day")
-        if "time_of_day" not in filtered.columns or filtered["time_of_day"].dropna().nunique() < 2:
+        if (
+            "time_of_day" not in plot_data.columns
+            or plot_data["time_of_day"].dropna().nunique() < 2
+        ):
             plot_empty_state("Not enough time-of-day groups for a boxplot.")
         else:
             fig, ax = plt.subplots(figsize=(9, 5))
-            sns.boxplot(data=filtered, x="time_of_day", y=selected_metric, hue="time_of_day", palette="Set2", legend=False, ax=ax)
+            sns.boxplot(
+                data=plot_data,
+                x="time_of_day",
+                y=selected_metric,
+                hue="time_of_day",
+                palette="Set2",
+                legend=False,
+                ax=ax,
+            )
             ax.set_xlabel("Time of day")
             ax.set_ylabel(selected_metric)
-            st.pyplot(fig, width="stretch")
+            render_matplotlib(fig)
 
     st.subheader(f"Histogram of {selected_metric}")
     fig, ax = plt.subplots(figsize=(12, 5))
-    sns.histplot(filtered[selected_metric].dropna(), bins=30, kde=True, ax=ax)
+    hist_data = plot_data[[selected_metric]].dropna()
+    sns.histplot(hist_data[selected_metric], bins=30, kde=True, ax=ax)
     ax.set_xlabel(selected_metric)
-    st.pyplot(fig, width="stretch")
+    render_matplotlib(fig)
 
-with relationships_tab:
+if page == "Relationships":
     scatter_col, corr_col = st.columns([1.1, 1])
 
     with scatter_col:
         st.subheader("Metric relationship")
         show_regression = st.checkbox("Add regression line", value=True)
-        scatter_data = filtered[[selected_metric, comparison_metric, "time_of_day"]].dropna()
+        scatter_data = limit_rows(
+            filtered[[selected_metric, comparison_metric, "time_of_day"]].dropna(),
+            visual_row_limit,
+        )
         if scatter_data.empty:
             plot_empty_state("Insufficient data for the selected metrics.")
         else:
@@ -437,23 +525,29 @@ with relationships_tab:
                     color="gray",
                     line_kws={"linestyle": "dashed"},
                 )
-            correlation = scatter_data[[selected_metric, comparison_metric]].corr().iloc[0, 1]
+            correlation = (
+                scatter_data[[selected_metric, comparison_metric]].corr().iloc[0, 1]
+            )
             ax.set_title(f"Correlation: {format_number(correlation, 2)}")
-            st.pyplot(fig, width="stretch")
+            render_matplotlib(fig)
 
     with corr_col:
         st.subheader("Correlation heatmap")
-        corr_metrics = [metric for metric in metrics if metric in filtered.columns and filtered[metric].dropna().nunique() > 1]
+        corr_metrics = [
+            metric
+            for metric in metrics
+            if metric in filtered.columns and filtered[metric].dropna().nunique() > 1
+        ]
         corr_metrics = corr_metrics[:10]
         if len(corr_metrics) < 2:
             plot_empty_state("At least two populated numeric metrics are needed for a heatmap.")
         else:
-            corr = filtered[corr_metrics].corr()
+            corr = limit_rows(filtered[corr_metrics].dropna(), visual_row_limit).corr()
             fig, ax = plt.subplots(figsize=(8, 6))
             sns.heatmap(corr, cmap="coolwarm", center=0, annot=False, ax=ax)
-            st.pyplot(fig, width="stretch")
+            render_matplotlib(fig)
 
-with activities_tab:
+if page == "Activities":
     st.subheader("Activity-level summary")
     activity_summary = make_activity_summary(filtered, metrics)
     if activity_summary.empty:
@@ -467,22 +561,42 @@ with activities_tab:
             mime="text/csv",
         )
 
-with map_tab:
+if page == "Map":
     st.subheader("Route map")
     if {"lat", "lon"}.issubset(filtered.columns):
         map_data = filtered[["lat", "lon"]].dropna()
-        map_data = map_data[(map_data["lat"].between(-90, 90)) & (map_data["lon"].between(-180, 180))]
+        map_data = map_data[
+            (map_data["lat"].between(-90, 90))
+            & (map_data["lon"].between(-180, 180))
+        ]
+        original_map_points = len(map_data)
+        map_data = limit_rows(map_data, map_row_limit)
         if map_data.empty:
             plot_empty_state("No valid latitude/longitude points are available for the current filters.")
         else:
             st.map(map_data, latitude="lat", longitude="lon", width="stretch")
-            st.caption("FIT semicircle coordinates are converted to latitude/longitude when needed.")
+            sampling_note = (
+                f" Showing {len(map_data):,} evenly sampled points from "
+                f"{original_map_points:,} valid route points."
+                if original_map_points > len(map_data)
+                else ""
+            )
+            st.caption(
+                "FIT semicircle coordinates are converted to latitude/longitude when needed."
+                + sampling_note
+            )
     else:
         plot_empty_state("This dataset does not include position_lat and position_long columns.")
 
-with data_tab:
+if page == "Data":
     st.subheader("Filtered data")
-    st.dataframe(filtered, width="stretch", hide_index=True)
+    display_rows = limit_rows(filtered, DEFAULT_TABLE_ROW_LIMIT)
+    if len(filtered) > len(display_rows):
+        st.caption(
+            f"Previewing {len(display_rows):,} evenly sampled rows from {len(filtered):,}. "
+            "Download the CSV for the full filtered dataset."
+        )
+    st.dataframe(display_rows, width="stretch", hide_index=True)
     st.download_button(
         "Download filtered CSV",
         data=dataframe_csv(filtered),
